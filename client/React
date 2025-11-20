@@ -1,0 +1,297 @@
+// ==========================
+// Reactクライアントアプリ（client/src/App.js）
+// ==========================
+import { useState, useEffect, useRef } from "react";
+import { io } from "socket.io-client";
+
+const stages = [
+  "マサバ海峡大橋",
+  "ユノハナ大渓谷",
+  "コンブトラック",
+  "ゴンズイ地区"
+];
+
+const weapons = [
+  "スプラシューター",
+  "52ガロン",
+  "N-ZAP",
+  "スプラローラー",
+  "スプラチャージャー"
+];
+
+const initialTeams = {
+  alpha: { bans: { stage: null, weapon: null }, picks: Array(4).fill(null), stagePick: null },
+  bravo: { bans: { stage: null, weapon: null }, picks: Array(4).fill(null), stagePick: null },
+};
+
+export default function App() {
+  const query = new URLSearchParams(window.location.search);
+  const team = query.get("team"); // alpha or bravo
+
+  const [teams, setTeams] = useState(initialTeams);
+  const [phase, setPhase] = useState("ban");
+  const [banStep, setBanStep] = useState(0);
+  const [stagePickStep, setStagePickStep] = useState(0);
+  const [pickStep, setPickStep] = useState(0);
+  const [timer, setTimer] = useState(20);
+  const [started, setStarted] = useState(false);
+
+  const socketRef = useRef(null);
+  const timerRef = useRef(null);
+
+  const currentTeam = banStep % 2 === 0 ? "alpha" : "bravo";
+  const isStageBan = banStep < 2;
+
+  // ==============================
+  // Socket.IO 接続（Render用URL）
+  // ==============================
+  useEffect(() => {
+    if (!socketRef.current) {
+      socketRef.current = io("https://YOUR-RENDER-URL.onrender.com");
+
+      socketRef.current.on("stateUpdate", (newState) => {
+        setTeams(newState.teams);
+        setPhase(newState.phase);
+        setBanStep(newState.banStep);
+        setStagePickStep(newState.stagePickStep);
+        setPickStep(newState.pickStep);
+        setTimer(newState.timer);
+        setStarted(newState.started);
+      });
+    }
+
+    return () => socketRef.current && socketRef.current.disconnect();
+  }, []);
+
+  const bannedStages = [teams.alpha.bans.stage, teams.bravo.bans.stage].filter(Boolean);
+  const bannedWeapons = [teams.alpha.bans.weapon, teams.bravo.bans.weapon].filter(Boolean);
+
+  function sendUpdate(newState) {
+    socketRef.current?.emit("stateChange", newState);
+  }
+
+  // ==============================
+  // BAN 処理
+  // ==============================
+  function handleBan(target) {
+    if (team !== currentTeam || !started) return;
+    clearInterval(timerRef.current);
+
+    const newTeams = structuredClone(teams);
+    if (isStageBan) newTeams[currentTeam].bans.stage = target;
+    else newTeams[currentTeam].bans.weapon = target;
+
+    sendUpdate({
+      teams: newTeams,
+      phase: banStep === 3 ? "stagePick" : "ban",
+      banStep: banStep + 1,
+      stagePickStep,
+      pickStep,
+      timer: 20,
+      started: true
+    });
+  }
+
+  // ==============================
+  // ステージ PICK
+  // ==============================
+  function handleStagePick(stage) {
+    const picker = stagePickStep % 2 === 0 ? "alpha" : "bravo";
+    if (!started || team !== picker) return;
+
+    clearInterval(timerRef.current);
+    const newTeams = structuredClone(teams);
+    newTeams[picker].stagePick = stage;
+
+    sendUpdate({
+      teams: newTeams,
+      phase: stagePickStep === 1 ? "pick" : "stagePick",
+      banStep,
+      stagePickStep: stagePickStep + 1,
+      pickStep,
+      timer: 20,
+      started: true
+    });
+  }
+
+  // ==============================
+  // 武器 PICK
+  // ==============================
+  function handlePick(weapon) {
+    const picker = pickStep % 2 === 0 ? "alpha" : "bravo";
+    if (!started || team !== picker) return;
+
+    clearInterval(timerRef.current);
+    const index = Math.floor(pickStep / 2);
+    const newTeams = structuredClone(teams);
+    newTeams[picker].picks[index] = weapon;
+
+    sendUpdate({
+      teams: newTeams,
+      phase,
+      banStep,
+      stagePickStep,
+      pickStep: pickStep + 1,
+      timer: 20,
+      started: true
+    });
+  }
+
+  // ==============================
+  // リセット（Alphaのみ）
+  // ==============================
+  function handleReset() {
+    if (team !== "alpha") return;
+    sendUpdate({
+      teams: initialTeams,
+      phase: "ban",
+      banStep: 0,
+      stagePickStep: 0,
+      pickStep: 0,
+      timer: 20,
+      started: false
+    });
+  }
+
+  // ==============================
+  // タイマー処理
+  // ==============================
+  useEffect(() => {
+    if (!started) return;
+
+    timerRef.current = setInterval(() => {
+      setTimer((prev) => {
+        if (prev <= 0) {
+          // 自動選択処理
+          if (phase === "ban") {
+            const auto = isStageBan
+              ? stages.find((s) => !bannedStages.includes(s))
+              : weapons.find((w) => !bannedWeapons.includes(w));
+            handleBan(auto);
+          }
+          else if (phase === "stagePick") {
+            const auto = stages.find(
+              (s) => s !== teams.alpha.stagePick && s !== teams.bravo.stagePick
+            );
+            handleStagePick(auto);
+          }
+          else if (phase === "pick") {
+            const auto = weapons.find(
+              (w) =>
+                !teams.alpha.picks.includes(w) &&
+                !teams.bravo.picks.includes(w)
+            );
+            handlePick(auto);
+          }
+          return 20;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timerRef.current);
+  }, [started, phase, teams]);
+
+  // ==============================
+  // 開始ボタン
+  // ==============================
+  function startGame() {
+    if (!started) {
+      sendUpdate({ teams, phase, banStep, stagePickStep, pickStep, timer: 20, started: true });
+      setStarted(true);
+    }
+  }
+
+  const baseUrl = window.location.origin + window.location.pathname;
+  const alphaUrl = `${baseUrl}?team=alpha`;
+  const bravoUrl = `${baseUrl}?team=bravo`;
+
+  // ==============================
+  // UI
+  // ==============================
+  return (
+    <div className="p-4 space-y-6 max-w-xl mx-auto">
+      <h1 className="text-3xl font-bold text-center">Splatoon BAN/PICK</h1>
+
+      {!started ? (
+        <div className="text-center space-y-4">
+          <button
+            className="px-6 py-3 bg-green-500 text-white rounded hover:bg-green-600"
+            onClick={startGame}
+          >
+            開始
+          </button>
+
+          <div>
+            <p>Alpha用URL: <span className="text-gray-700 select-all">{alphaUrl}</span></p>
+            <p>Bravo用URL: <span className="text-gray-700 select-all">{bravoUrl}</span></p>
+            <p className="text-sm text-red-500">※Renderにデプロイして使用してください</p>
+          </div>
+        </div>
+      ) : (
+        <>
+          <p className="text-center text-lg">残り時間: <strong>{timer}s</strong></p>
+
+          {/* BANフェーズUI */}
+          {phase === "ban" && (
+            <div className="space-y-2">
+              <h2 className="font-bold text-xl text-center">
+                {isStageBan ? "ステージBAN" : "武器BAN"} - {currentTeam.toUpperCase()}
+              </h2>
+
+              {(isStageBan ? stages : weapons).map((item) => (
+                <button
+                  key={item}
+                  disabled={
+                    bannedStages.includes(item) || bannedWeapons.includes(item) || team !== currentTeam
+                  }
+                  onClick={() => handleBan(item)}
+                  className="w-full p-2 bg-blue-200 rounded disabled:bg-gray-300"
+                >
+                  {item}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* ステージPICK */}
+          {phase === "stagePick" && (
+            <div className="space-y-2">
+              <h2 className="text-xl font-bold text-center">ステージPICK</h2>
+              {stages.map((stage) => (
+                <button
+                  key={stage}
+                  disabled={stage === teams.alpha.stagePick || stage === teams.bravo.stagePick}
+                  onClick={() => handleStagePick(stage)}
+                  className="w-full p-2 bg-purple-200 rounded disabled:bg-gray-300"
+                >
+                  {stage}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* 武器PICK */}
+          {phase === "pick" && (
+            <div className="space-y-2">
+              <h2 className="text-xl font-bold text-center">武器PICK</h2>
+              {weapons.map((weapon) => (
+                <button
+                  key={weapon}
+                  disabled={
+                    teams.alpha.picks.includes(weapon) || teams.bravo.picks.includes(weapon)
+                  }
+                  onClick={() => handlePick(weapon)}
+                  className="w-full p-2 bg-green-200 rounded disabled:bg-gray-300"
+                >
+                  {weapon}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* リセット（Alphaだけ） */}
+          {team === "alpha" && (
+            <button
+              onClick={handleReset}
+              className="w-full p-2 bg-red
