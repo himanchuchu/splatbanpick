@@ -1,5 +1,6 @@
 // ==========================
 // Reactクライアントアプリ（client/src/App.js）
+// Render用に静的ビルド対応
 // ==========================
 import { useState, useEffect, useRef } from "react";
 import { io } from "socket.io-client";
@@ -25,15 +26,12 @@ export default function App() {
   const [ready, setReady] = useState({ alpha: false, bravo: false });
 
   const socketRef = useRef(null);
-  const timerRef = useRef(null);
-
-  const currentTeam = banStep % 2 === 0 ? "alpha" : "bravo";
-  const isStageBan = banStep < 2;
 
   useEffect(() => {
     if (!socketRef.current) {
+      // Renderではポート自動割り当てのため静的ビルドに対応
       socketRef.current = io("https://YOUR-RENDER-URL.onrender.com");
-
+      
       socketRef.current.on("stateUpdate", (newState) => {
         setTeams(newState.teams);
         setPhase(newState.phase);
@@ -45,11 +43,8 @@ export default function App() {
         setReady(newState.ready || { alpha: false, bravo: false });
       });
     }
-    return () => socketRef.current && socketRef.current.disconnect();
+    return () => socketRef.current?.disconnect();
   }, []);
-
-  const bannedStages = [teams.alpha.bans.stage, teams.bravo.bans.stage].filter(Boolean);
-  const bannedWeapons = [teams.alpha.bans.weapon, teams.bravo.bans.weapon].filter(Boolean);
 
   function sendUpdate(newState) {
     socketRef.current?.emit("stateChange", newState);
